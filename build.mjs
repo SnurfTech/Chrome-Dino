@@ -8,12 +8,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
- 
+
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CACHE = path.join(ROOT, '.cache');
 const CLONE = path.join(CACHE, 'chromium');
 const WORK = path.join(CACHE, 'work');
- 
+
 const { values: opts } = parseArgs({
   options: {
     out: { type: 'string', default: 'dist/dino.html' },
@@ -23,17 +23,17 @@ const { values: opts } = parseArgs({
     help: { type: 'boolean', short: 'h', default: false },
   },
 });
- 
+
 if (opts.help) {
   console.log('Usage: build.mjs [--out <file>] [--minify] [--fresh] [--ref <chromium-tag>]');
   process.exit(0);
 }
- 
+
 const log = (...a) => console.log('•', ...a);
 const warn = (...a) => console.warn('! WARNING:', ...a);
- 
+
 // ---------------------------------------------------------------- 1. fetch
- 
+
 const SPARSE_PATHS = [
   'components/neterror/resources',
   'components/security_interstitials/core/common/resources',
@@ -42,13 +42,13 @@ const SPARSE_PATHS = [
   'ui/webui/resources/js',
   'third_party/lit/v3_0',
 ];
- 
+
 function git(args, cwd) {
   execFileSync('git', args, { cwd, stdio: 'inherit' });
 }
- 
+
 const REF_FILE = path.join(CACHE, 'chromium.ref');
- 
+
 function fetchChromium() {
   const wantRef = opts.ref ?? '';
   const haveRef = fs.existsSync(REF_FILE) ? fs.readFileSync(REF_FILE, 'utf8').trim() : '';
@@ -78,9 +78,9 @@ function fetchChromium() {
     log('Using cached Chromium checkout (pass --fresh to re-clone)');
   }
 }
- 
+
 // ---------------------------------------------------------------- 2. patch
- 
+
 function patch(file, steps) {
   let src = fs.readFileSync(file, 'utf8');
   for (const [label, re, repl] of steps) {
@@ -92,11 +92,11 @@ function patch(file, steps) {
   }
   fs.writeFileSync(file, src);
 }
- 
+
 function prepareWorkdir() {
   fs.rmSync(WORK, { recursive: true, force: true });
   fs.cpSync(path.join(CLONE, 'components/neterror/resources'), WORK, { recursive: true });
- 
+
   patch(path.join(WORK, 'dino_game/offline.ts'), [
     [
       'enable easter egg',
@@ -116,7 +116,7 @@ function prepareWorkdir() {
         ].join('\n'),
     ],
   ]);
- 
+
   patch(path.join(WORK, 'neterror.ts'), [
     [
       'hide empty error code',
@@ -124,7 +124,7 @@ function prepareWorkdir() {
       (_, i) => `${i}\${data.errorCode ? html\`<div class="error-code">\${data.errorCode}</div>\` : ""}`,
     ],
   ]);
- 
+
   const cssFile = path.join(WORK, 'neterror.css');
   let css = fs.readFileSync(cssFile, 'utf8');
   css = css.replace(/<if\s+expr="\s*is_ios\s*"[^>]*>[\s\S]*?<\/if>/g, '');
@@ -132,9 +132,9 @@ function prepareWorkdir() {
   css += '\nbody {\n  font-family: Arial, sans-serif;\n  font-size: 75%;\n}\n';
   fs.writeFileSync(cssFile, css);
 }
- 
+
 // ---------------------------------------------------------------- 3. bundle
- 
+
 // ---- chrome://resources resolution -------------------------------------
 // chrome://resources/<x> (also written //resources/<x> inside the webui tree)
 // lives in ui/webui/resources/<x>. The Lit bundle chrome://resources/lit/v3_0/lit.rollup.js
@@ -143,7 +143,7 @@ function prepareWorkdir() {
 const LIT_BASE = path.join(CACHE, 'lit-base.ts');
 const LIT_ENTRY = path.join(CACHE, 'lit-entry.ts');
 let crLitPath = null;
- 
+
 function ensureCrLit() {
   let rel;
   try {
@@ -171,7 +171,7 @@ function ensureCrLit() {
   warn('upstream cr_lit_element.ts not found; using vendor/cr_lit_element.ts');
   return path.join(ROOT, 'vendor', 'cr_lit_element.ts');
 }
- 
+
 function writeLitEntries() {
   crLitPath = ensureCrLit();
   fs.mkdirSync(CACHE, { recursive: true });
@@ -197,7 +197,7 @@ function writeLitEntries() {
       `export { CrLitElement } from ${JSON.stringify(crLitPath)};\n`,
   );
 }
- 
+
 function resolveChrome(spec, importer) {
   const rel = spec.replace(/^(?:chrome:)?\/\/resources\//, '');
   if (rel.startsWith('lit/v3_0/')) {
@@ -212,16 +212,19 @@ function resolveChrome(spec, importer) {
   }
   return hit;
 }
- 
+
 const chromePlugin = {
   name: 'chrome-resources',
   setup(build) {
     build.onResolve({ filter: /^(?:chrome:)?\/\/resources\// }, (args) => ({
       path: resolveChrome(args.path, args.importer),
     }));
+    // Chromium's own sources import Lit's internal path 'lit/index.js', which
+    // the npm package doesn't export; point it at our Lit base entry instead.
+    build.onResolve({ filter: /^lit\/index\.js$/ }, () => ({ path: LIT_BASE }));
   },
 };
- 
+
 async function bundle(entry) {
   if (typeof Bun !== 'undefined') {
     log('Bundling with Bun…');
@@ -238,7 +241,7 @@ async function bundle(entry) {
     }
     return result.outputs[0].text();
   }
- 
+
   log('Bundling with esbuild…');
   const esbuild = await import('esbuild');
   const result = await esbuild.build({
@@ -253,11 +256,11 @@ async function bundle(entry) {
   });
   return result.outputFiles[0].text;
 }
- 
+
 // ---------------------------------------------------------------- 4. HTML
- 
+
 const LICENSE_RE = /\/\*\*(?:(?!\*\/)[\s\S])*?@license(?:(?!\*\/)[\s\S])*?\*\/\s*/g;
- 
+
 const LOAD_TIME_DATA = {
   errorCode: '',
   heading: { msg: 'No internet' },
@@ -273,27 +276,27 @@ const LOAD_TIME_DATA = {
   disabledEasterEgg: 'Game disabled',
   altGameType: '0',
 };
- 
+
 const safeScript = (js) => js.replace(/<\/script/gi, '<\\/script');
- 
+
 function buildHtml(bundledJs) {
   const read = (p) => fs.readFileSync(p, 'utf8');
   const interstitial = path.join(CLONE, 'components/security_interstitials/core/common/resources');
- 
+
   let html = read(path.join(WORK, 'neterror.html'));
- 
+
   html = html
     .replace('<html dir="$i18n{textdirection}" lang="$i18n{language}">', () => '<html dir="ltr" lang="en">')
     .replace(/<title>.*?<\/title>/, '<title>There is no internet</title>')
     .replace(/^.*interstitial_(?:core|common)\.css.*\n?/gm, '')
     .replace(/<if expr="(?:not )?optimize_webui">[\s\S]*?<\/if>/g, '')
     .replace(/<body class="neterror"[^>]*>/, '<body class="neterror">');
- 
+
   const stripIf = (css) => css.replace(/^.*<\/?if\b.*>.*\n?/gm, '');
   const interstitialCss =
     stripIf(read(path.join(interstitial, 'interstitial_core.css'))) + '\n' +
     stripIf(read(path.join(interstitial, 'interstitial_common.css'))) + '\n';
- 
+
   if (html.includes('<style>')) {
     html = html.replace('<style>', () => '<style>\n' + interstitialCss);
   } else if (/<head[^>]*>/.test(html)) {
@@ -303,18 +306,18 @@ function buildHtml(bundledJs) {
   } else {
     warn('neterror.html: no <head> found; interstitial CSS not injected');
   }
- 
+
   const js = bundledJs.replace(/loadTimeData\.valueExists\("disabledEasterEgg"\);/g, 'false;');
   const injected =
     `  <script>window.loadTimeDataRaw = ${JSON.stringify(LOAD_TIME_DATA)};</script>\n` +
     `  <script>\n${safeScript(js)}\n  </script>\n`;
   html = html.replace('</head>', () => injected + '</head>');
- 
+
   return html.replace(LICENSE_RE, '');
 }
- 
+
 // ---------------------------------------------------------------- 5. inline assets
- 
+
 const MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
@@ -323,30 +326,30 @@ const MIME = {
   '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
   '.css': 'text/css', '.js': 'text/javascript',
 };
- 
+
 const isRemote = (u) => /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(u);
- 
+
 function localFile(ref, baseDir) {
   if (!ref || isRemote(ref)) return null;
   const p = path.resolve(baseDir, ref.split(/[?#]/)[0]);
   return fs.existsSync(p) && fs.statSync(p).isFile() ? p : null;
 }
- 
+
 function dataUri(file) {
   const mime = MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream';
   return `data:${mime};base64,${fs.readFileSync(file).toString('base64')}`;
 }
- 
+
 function inlineCss(css, baseDir) {
   return css.replace(/url\(\s*(['"]?)(.*?)\1\s*\)/g, (m, _q, ref) => {
     const f = localFile(ref.trim(), baseDir);
     return f ? `url(${dataUri(f)})` : m;
   });
 }
- 
+
 const getAttr = (tag, name) =>
   tag.match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i'))?.slice(1).find((v) => v !== undefined);
- 
+
 function inlineAssets(html, baseDir) {
   // <link rel="stylesheet" href="local.css">
   html = html.replace(/<link\b[^>]*>/gi, (tag) => {
@@ -355,46 +358,45 @@ function inlineAssets(html, baseDir) {
     if (!f) return tag;
     return `<style>${inlineCss(fs.readFileSync(f, 'utf8'), path.dirname(f))}</style>`;
   });
- 
+
   // <script src="local.js"></script>
   html = html.replace(/<script\b[^>]*\bsrc\s*=[^>]*>\s*<\/script>/gi, (tag) => {
     const f = localFile(getAttr(tag, 'src'), baseDir);
     return f ? `<script>${safeScript(fs.readFileSync(f, 'utf8'))}</script>` : tag;
   });
- 
+
   // <img|audio|video|source src="local">
   html = html.replace(/<(?:img|audio|video|source)\b[^>]*>/gi, (tag) => {
     const src = getAttr(tag, 'src');
     const f = localFile(src, baseDir);
     return f ? tag.replace(src, () => dataUri(f)) : tag;
   });
- 
+
   // inline <style> blocks with url(...)
   html = html.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (m, css) =>
     m.replace(css, () => inlineCss(css, baseDir)),
   );
- 
+
   return html;
 }
- 
+
 // ---------------------------------------------------------------- main
- 
+
 async function main() {
   fetchChromium();
   writeLitEntries();
   prepareWorkdir();
- 
+
   const js = await bundle(path.join(WORK, 'neterror.ts'));
   const html = inlineAssets(buildHtml(js), WORK);
- 
+
   const out = path.resolve(ROOT, opts.out);
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, html);
   log(`Wrote ${path.relative(process.cwd(), out)} (${(html.length / 1024).toFixed(0)} KiB)`);
 }
- 
+
 main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
- 
