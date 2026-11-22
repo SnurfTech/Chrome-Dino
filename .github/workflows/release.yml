@@ -1,0 +1,97 @@
+name: Build & Release
+
+on:
+  schedule:
+    - cron: '17 3 * * *' # daily
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - build.mjs
+      - package.json
+      - tsconfig.json
+      - .github/workflows/release.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm install
+
+      - name: Find latest Chromium tag
+        id: chromium
+        run: |
+          set -euo pipefail
+          TAG=$(git ls-remote --tags --refs https://github.com/chromium/chromium.git \
+            | awk '{sub("refs/tags/", "", $2); print $2}' \
+            | grep -E '^[0-9]+(\.[0-9]+){3}$' \
+            | sort -V | tail -n1)
+          test -n "$TAG"
+          echo "Latest Chromium tag: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build (normal + minified)
+        run: |
+          set -euo pipefail
+          node build.mjs --ref "${{ steps.chromium.outputs.tag }}" --out dist/dino.html
+          node build.mjs --ref "${{ steps.chromium.outputs.tag }}" --out dist/dino.min.html --minify
+          ls -l dist
+
+      - name: Create or update release
+        env:
+          CHROMIUM_TAG: ${{ steps.chromium.outputs.tag }}
+        run: |
+          set -euo pipefail
+          FILES=(dist/dino.html dist/dino.min.html)
+
+          # Compare against the assets of the latest release (if any).
+          LATEST=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+          CHANGED=true
+          if [ -n "$LATEST" ]; then
+            rm -rf prev && mkdir prev
+            if gh release download "$LATEST" --dir prev --pattern dino.html --pattern dino.min.html \
+               && cmp -s prev/dino.html dist/dino.html \
+               && cmp -s prev/dino.min.html dist/dino.min.html; then
+              CHANGED=false
+            fi
+          fi
+
+          if [ "$CHANGED" = false ]; then
+            echo "No changes to the bundled game; refreshing assets on $LATEST"
+            gh release upload "$LATEST" "${FILES[@]}" --clobber
+            exit 0
+          fi
+
+          # New version: v<chromium tag>, with -rN appended if that tag is already used.
+          BASE="v${CHROMIUM_TAG}"
+          VERSION="$BASE"
+          N=2
+          while gh release view "$VERSION" >/dev/null 2>&1 || git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; do
+            VERSION="${BASE}-r${N}"
+            N=$((N + 1))
+          done
+
+          echo "Creating release $VERSION"
+          gh release create "$VERSION" "${FILES[@]}" \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --notes "Built from Chromium \`${CHROMIUM_TAG}\`.
+
+          - \`dino.html\`: normal build
+          - \`dino.min.html\`: minified build" \
+            --latest
