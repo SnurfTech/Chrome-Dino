@@ -4,17 +4,19 @@
   "description": "Builds a single-file dino.html from Chromium's offline error page",
   "type": "module",
   "private": true,
-  "engines": { "node": ">=18.3" },
+  "engines": {
+    "node": ">=18.3"
+  },
   "scripts": {
     "build": "node build.mjs",
     "build:bun": "bun build.mjs",
     "build:min": "node build.mjs --minify",
     "build:fresh": "node build.mjs --fresh"
   },
-  "dependencies": {
-    "lit": "^3.3.0"
-  },
   "devDependencies": {
     "esbuild": "^0.25.0"
+  },
+  "dependencies": {
+    "lit": "^3.3.0"
   }
 }
