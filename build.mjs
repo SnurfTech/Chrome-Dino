@@ -135,14 +135,76 @@ function prepareWorkdir() {
  
 // ---------------------------------------------------------------- 3. bundle
  
-// chrome://resources/<x> lives in ui/webui/resources/<x> in the Chromium tree.
-// The Lit bundle (chrome://resources/lit/v3_0/lit.rollup.js, which already
-// includes CrLitElement) is the checked-in file third_party/lit/v3_0/lit.rollup.js.
-function resolveChrome(spec) {
-  const rel = spec.replace(/^chrome:\/\/resources\//, '');
-  const base = rel.startsWith('lit/v3_0/')
-    ? path.join(CLONE, 'third_party/lit/v3_0', rel.slice('lit/v3_0/'.length))
-    : path.join(CLONE, 'ui/webui/resources', rel);
+// ---- chrome://resources resolution -------------------------------------
+// chrome://resources/<x> (also written //resources/<x> inside the webui tree)
+// lives in ui/webui/resources/<x>. The Lit bundle chrome://resources/lit/v3_0/lit.rollup.js
+// is generated at Chromium build time and isn't checked in, so we assemble an
+// equivalent from the `lit` npm package plus upstream's CrLitElement source.
+const LIT_BASE = path.join(CACHE, 'lit-base.ts');
+const LIT_ENTRY = path.join(CACHE, 'lit-entry.ts');
+let crLitPath = null;
+ 
+function ensureCrLit() {
+  let rel;
+  try {
+    const out = execFileSync(
+      'git',
+      ['ls-tree', '-r', '--name-only', 'HEAD', '--', 'third_party/lit', 'ui/webui/resources'],
+      { cwd: CLONE, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
+    );
+    rel = out.split('\n').find((f) => /(^|\/)cr_lit_element\.ts$/.test(f));
+  } catch (e) {
+    warn('could not search the Chromium tree for cr_lit_element.ts:', e.message);
+  }
+  if (rel) {
+    const abs = path.join(CLONE, rel);
+    if (!fs.existsSync(abs)) {
+      log(`Adding ${path.dirname(rel)} to sparse checkout…`);
+      git(['sparse-checkout', 'add', path.dirname(rel)], CLONE);
+      git(['checkout'], CLONE);
+    }
+    if (fs.existsSync(abs)) {
+      log(`Using upstream CrLitElement: ${rel}`);
+      return abs;
+    }
+  }
+  warn('upstream cr_lit_element.ts not found; using vendor/cr_lit_element.ts');
+  return path.join(ROOT, 'vendor', 'cr_lit_element.ts');
+}
+ 
+function writeLitEntries() {
+  crLitPath = ensureCrLit();
+  fs.mkdirSync(CACHE, { recursive: true });
+  fs.writeFileSync(
+    LIT_BASE,
+    [
+      "export * from 'lit';",
+      "export * from 'lit/async-directive.js';",
+      "export * from 'lit/directive.js';",
+      "export * from 'lit/directives/class-map.js';",
+      "export * from 'lit/directives/if-defined.js';",
+      "export * from 'lit/directives/live.js';",
+      "export * from 'lit/directives/ref.js';",
+      "export * from 'lit/directives/repeat.js';",
+      "export * from 'lit/directives/style-map.js';",
+      "export * from 'lit/directives/unsafe-html.js';",
+      '',
+    ].join('\n'),
+  );
+  fs.writeFileSync(
+    LIT_ENTRY,
+    `export * from ${JSON.stringify(LIT_BASE)};\n` +
+      `export { CrLitElement } from ${JSON.stringify(crLitPath)};\n`,
+  );
+}
+ 
+function resolveChrome(spec, importer) {
+  const rel = spec.replace(/^(?:chrome:)?\/\/resources\//, '');
+  if (rel.startsWith('lit/v3_0/')) {
+    // CrLitElement itself imports Lit; give it the base (no CrLitElement) to avoid a cycle.
+    return importer && path.resolve(importer) === path.resolve(crLitPath) ? LIT_BASE : LIT_ENTRY;
+  }
+  const base = path.join(CLONE, 'ui/webui/resources', rel);
   const candidates = [base.replace(/\.js$/, '.ts'), base];
   const hit = candidates.find((c) => fs.existsSync(c) && fs.statSync(c).isFile());
   if (!hit) {
@@ -154,8 +216,8 @@ function resolveChrome(spec) {
 const chromePlugin = {
   name: 'chrome-resources',
   setup(build) {
-    build.onResolve({ filter: /^chrome:\/\/resources\// }, (args) => ({
-      path: resolveChrome(args.path),
+    build.onResolve({ filter: /^(?:chrome:)?\/\/resources\// }, (args) => ({
+      path: resolveChrome(args.path, args.importer),
     }));
   },
 };
@@ -319,6 +381,7 @@ function inlineAssets(html, baseDir) {
  
 async function main() {
   fetchChromium();
+  writeLitEntries();
   prepareWorkdir();
  
   const js = await bundle(path.join(WORK, 'neterror.ts'));
